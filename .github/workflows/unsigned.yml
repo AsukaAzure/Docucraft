@@ -1,0 +1,81 @@
+name: Unsigned APK Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for the release'
+        required: false
+        default: ''
+      release_name:
+        description: 'Release name'
+        required: false
+        default: ''
+      body:
+        description: 'Release notes'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build_and_release_unsigned_apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up build environment
+        uses: ./.github/actions/setup-build
+        with:
+          cache-read-only: 'true'
+          firebase-placeholder: 'false'
+
+      - name: Build unsigned release APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Verify APK is generated
+        run: |
+          echo "Generated APK files:"
+          find app/build/outputs/apk -name "*.apk" -print
+          test "$(find app/build/outputs/apk -name "*.apk" | wc -l)" -gt 0
+
+      - name: Create GitHub release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name || format('v{0}', github.run_number) }}
+          name: ${{ github.event.inputs.release_name || github.event.inputs.tag || github.ref_name || format('Release {0}', github.run_number) }}
+          body: ${{ github.event.inputs.body || 'Unsigned APK build' }}
+          files: app/build/outputs/apk/**/*.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+
+      - name: Delete workflow artifacts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "Deleting artifacts for run $RUN_ID"
+          curl -sS \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            | jq -r '.artifacts[].id' \
+            | while read -r artifact_id; do
+                [ -n "$artifact_id" ] || continue
+                echo "Deleting artifact $artifact_id"
+                curl -sS -X DELETE \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$REPO/actions/artifacts/$artifact_id" || true
+              done
